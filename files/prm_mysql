@@ -12,6 +12,7 @@
 #           Narayan Newton:               add Gentoo/Debian defaults
 #           Marian Marinov, Florian Haas: add replication capability
 #           Yves Trudeau, Baron Schwartz: add VIP support and improve replication
+#           Adrian Vondendriesch:         patch crm replication info update
 #
 # Support:  linux-ha@lists.linux-ha.org
 # License:  GNU General Public License (GPL)
@@ -903,17 +904,8 @@ set_reader_attr() {
 
 is_master_side() {
     #Returns true (0) if this cluster has a grant for the booth ticket OCF_RESKEY_booth_master_ticket
-    local ticket crmTicketRet
-
     if [ "${#OCF_RESKEY_geo_remote_IP}" -gt "0" ]; then
-        #Try the new format
-		crmTicketRet=`$CRM_TICKET --info 2> /dev/null`
-        if [ "$?" -ne "0" ]; then
-            # got an error, we assume the old format
-            ticket=`$CRM_TICKET -t $OCF_RESKEY_booth_master_ticket -Q | grep -c 'true'`
-        else
-            ticket=`echo $crmTicketRet | grep $OCF_RESKEY_booth_master_ticket | awk '{ print $2 }' | grep -c granted`
-        fi
+		ticket=`$CRM_TICKET --info | grep $OCF_RESKEY_booth_master_ticket | awk '{ print $2 }' | grep -c granted`
 
 		if [ "$ticket" -eq "1" ]; then
 			return 0
@@ -1288,6 +1280,7 @@ mysql_stop() {
 
 mysql_promote() {
     local master_info
+    local crm_master_info out rc
 
     if ( ! mysql_status err ); then
         return $OCF_NOT_RUNNING
@@ -1298,7 +1291,18 @@ mysql_promote() {
     # Set Master Info in CIB, cluster level attribute
     update_data_master_status
     master_info="$(get_local_ip)|$(get_master_status File)|$(get_master_status Position)"
-    ${CRM_ATTR_REPL_INFO} -v "$master_info"
+
+    # check if crm replication info is of us
+    crm_master_info=`$CRM_ATTR_REPL_INFO --query  -q | cut -d'|' -f1`
+
+    # update crm attribute only if it doesn't point at us
+    if [ $crm_master_info != ${HOSTNAME} ]; then
+        ${CRM_ATTR_REPL_INFO} -v "$master_info"
+        ocf_log info "updated REPL_INFO, this will cause all other nodes to choose us as new master"
+    else
+        ocf_log info "not updating REPL_INFO because crm already points at us"
+    fi
+
     rm -f $tmpfile
 
     set_read_only off || return $OCF_ERR_GENERIC
